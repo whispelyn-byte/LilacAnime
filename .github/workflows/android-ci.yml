@@ -19,15 +19,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      # compileSdk 37 as in module.toml when the SDK has it, else the newest one before it.
+      # The runner's own Android SDK. compileSdk 37 as in module.toml when the SDK has it, else the newest one before it.
       - name: Android platform
         run: |
-          if sdkmanager "platforms;android-37" && [ -d "$ANDROID_SDK_ROOT/platforms/android-37" ]; then
-            echo "CI_SDK=37" >> "$GITHUB_ENV"
-          else
-            sdkmanager "platforms;android-36"
+          sdkmanager=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+          ls "$ANDROID_HOME/platforms"
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          if [ -d "$ANDROID_HOME/platforms/android-37" ] || "$sdkmanager" "platforms;android-37"; then
+            [ -d "$ANDROID_HOME/platforms/android-37" ] && echo "CI_SDK=37" >> "$GITHUB_ENV"
+          fi
+          if ! grep -q CI_SDK "$GITHUB_ENV"; then
+            [ -d "$ANDROID_HOME/platforms/android-36" ] || "$sdkmanager" "platforms;android-36"
             echo "CI_SDK=36" >> "$GITHUB_ENV"
           fi
 
