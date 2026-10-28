@@ -1246,12 +1246,7 @@ fun PlayerScreen(
             vm.awaitSyncForPlayback()
             val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
             resumeDiagnostic(context, vm, anime.id, currentEpisode.id, currentEpisode.number, saved)
-            val resume = saved?.progress
-                ?.takeUnless { it >= 0.95f }
-                ?.let { (engine.duration * it).toLong() } ?: 0L
-            if (resume > 0L && engine.duration > 0L) {
-                engine.seekTo(resume.coerceAtMost(engine.duration - 250L))
-            }
+            launch { resumePlayback(engine, saved?.progress) { isActive } }
             if (!subtitleSelectionOpen) {
                 engine.play()
                 MainActivity.isVideoPlaying = true
@@ -1408,12 +1403,7 @@ fun PlayerScreen(
         vm.awaitSyncForPlayback()
         val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
         resumeDiagnostic(context, vm, anime.id, currentEpisode.id, currentEpisode.number, saved)
-        val resume = saved?.progress
-            ?.takeUnless { it >= 0.95f }
-            ?.let { (engine.duration * it).toLong() } ?: 0L
-        if (resume > 0L && engine.duration > 0L) {
-            engine.seekTo(resume.coerceAtMost((engine.duration - 250L).coerceAtLeast(0L)))
-        }
+        launch { resumePlayback(engine, saved?.progress) { isActive } }
         if (!subtitleSelectionOpen) {
             engine.play()
             MainActivity.isVideoPlaying = true
@@ -1653,19 +1643,7 @@ fun PlayerScreen(
         if (!subtitleSelectionOpen) {
             MainActivity.isVideoPlaying = true
         }
-        repeat(80) {
-            if (!isActive || generation != playbackGeneration) return@LaunchedEffect
-            if (engine.duration > 0L) {
-                val resume = saved?.progress
-                    ?.takeUnless { it >= 0.95f }
-                    ?.let { (engine.duration * it).toLong() } ?: 0L
-                if (resume > 0L) {
-                    engine.seekTo(resume.coerceAtMost((engine.duration - 250L).coerceAtLeast(0L)))
-                }
-                return@repeat
-            }
-            delay(100)
-        }
+        resumePlayback(engine, saved?.progress) { isActive && generation == playbackGeneration }
     }
 
     // AniSkip timestamps are resolved the same way as the reference player:
@@ -3705,4 +3683,24 @@ private fun resumeDiagnostic(context: android.content.Context, vm: AnimeViewMode
         if (mine.isEmpty()) vm.watchHistory.take(3).forEach { append("\n (다른) ").append(it.animeId).append(' ').append(it.episodeKey.substringAfterLast(':')).append(' ').append(Math.round(it.progress * 100)).append('%') }
     }
     android.os.Handler(android.os.Looper.getMainLooper()).post { Toast.makeText(context, text, Toast.LENGTH_LONG).show() }
+}
+
+// Goes to where the episode was left (progress 0–1; from the end on, 95 %, it starts over): once the stream knows its
+// length (waited for up to 30 s), and again every second while mpv is not there yet — a seek sent while an HLS stream is
+// still opening is dropped, which left a resumed episode at the start. Gives up after 6 tries.
+private suspend fun resumePlayback(engine: MpvPlayerEngine, progress: Float?, current: () -> Boolean) {
+    val target = progress?.takeIf { it > 0f && it < 0.95f } ?: return
+    var tries = 0
+    repeat(300) {
+        if (!current()) return
+        val duration = engine.duration
+        if (duration > 0L) {
+            val position = (duration * target).toLong().coerceAtMost((duration - 250L).coerceAtLeast(0L))
+            if (engine.currentPosition >= position - 3_000L) return
+            if (tries >= 6) return
+            engine.seekTo(position)
+            tries++
+            kotlinx.coroutines.delay(1_000L)
+        } else kotlinx.coroutines.delay(100L)
+    }
 }
