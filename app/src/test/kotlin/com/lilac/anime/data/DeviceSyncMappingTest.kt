@@ -171,6 +171,40 @@ class DeviceSyncMappingTest {
     }
 
     @Test
+    fun `a Re-Anime episode id that is a number of its own is not taken for the episode's number`() {
+        // ReAnimeHarParser.episodeFromTable: "reanime:<slug>:<episodeId>".
+        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:apothecary", "reanime:apothecary:48213", 0.38))).apply {
+            getJSONObject("history").getJSONObject("reanime:apothecary:reanime:apothecary:48213").put("episodeNumber", 1).getJSONObject("episode").put("number", 1)
+        }, JSONObject(), JSONObject(), emptyMap(), 1000L, hash)
+        val sent = out.getJSONObject(0)
+        assertEquals("reanime:https://reanime.to/watch/apothecary?ep=1", sent.getString("id"))
+        assertEquals("1", sent.getJSONObject("data").getJSONObject("episode").getString("name"))
+        assertEquals("reanime:apothecary:48213", sent.getJSONObject("data").getString("androidEpisodeKey"))
+    }
+
+    @Test
+    fun `progress goes out in whole percents, as the desktop keeps it`() {
+        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-2", 0.10638))), JSONObject(), JSONObject(), emptyMap(), 1000L, hash)
+        assertEquals(11.0, out.getJSONObject(0).getJSONObject("data").getDouble("progress"), 0.0)
+    }
+
+    @Test
+    fun `an episode played again here under its own id replaces the synced one without removing it there`() {
+        val (id, data) = reanimeEpisode("apothecary", 1, 38.0, 2000L)
+        val remote = JSONObject()
+        DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
+        // The synced entry ("…:ep-1") gives way to the player's own ("…:48213", episode 1).
+        val before = snapshotOf(local(history = listOf(Triple("reanime:apothecary", "reanime:apothecary:ep-1", 0.38))))
+        val now = local(history = listOf(Triple("reanime:apothecary", "reanime:apothecary:48213", 0.6)), now = 5000L)
+        now.getJSONObject("history").getJSONObject("reanime:apothecary:reanime:apothecary:48213").put("episodeNumber", 1).getJSONObject("episode").put("number", 1)
+        val out = DeviceSyncMapping.outgoing(now, before, remote, emptyMap(), 5000L, hash)
+        assertEquals(1, out.length())
+        assertEquals(id, out.getJSONObject(0).getString("id"))
+        assertFalse(out.getJSONObject(0).optBoolean("deleted"))
+        assertEquals(60.0, out.getJSONObject(0).getJSONObject("data").getDouble("progress"), 0.0)
+    }
+
+    @Test
     fun `a desktop work this app has no source for is left out`() {
         val mal = JSONObject().put("mal_id", 52991).put("title", "Frieren").put("savedAt", 1L)
         val merged = DeviceSyncMapping.merge(local(), listOf(item("library", "52991", mal, 1L)), JSONObject())

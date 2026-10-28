@@ -1107,6 +1107,8 @@ class AnimeViewModel : ViewModel() {
         val app = context.applicationContext
         if (!DeviceSyncClient.isConnected(app)) return
         // A later request never pushes a sooner one back.
+        // One asked for while a sync runs follows it.
+        if (syncing) { syncAgain = true; return }
         val at = System.currentTimeMillis() + delayMs
         if (syncTimer?.isActive == true && syncDue <= at) return
         syncTimer?.cancel()
@@ -1189,7 +1191,8 @@ class AnimeViewModel : ViewModel() {
 
     fun updateProgress(context: Context, animeId: String, episodeNumber: Int, progress: Float, episodeKey: String = episodeNumber.toString()) {
         rememberAnimeSnapshot(context, animeId)
-        val filtered = watchHistory.filterNot { it.animeId == animeId && it.episodeKey.equals(episodeKey, ignoreCase = true) }
+        // The episode's entry from another device under another key goes too: this one takes its place.
+        val filtered = watchHistory.filterNot { (it.animeId == animeId && it.episodeKey.equals(episodeKey, ignoreCase = true)) || sameNumberedEpisode(it, animeId, episodeKey, episodeNumber) }
         val updatedItem = WatchProgress(animeId = animeId, episodeNumber = episodeNumber, progress = progress, episodeKey = episodeKey)
         val newList = listOf(updatedItem) + filtered
         watchHistory = newList
@@ -1205,7 +1208,15 @@ class AnimeViewModel : ViewModel() {
                 it.episodeNumber == episodeNumber &&
                 (it.episodeKey.equals(episodeKey, ignoreCase = true) ||
                     (it.episodeKey == it.episodeNumber.toString() && episodeKey == episodeNumber.toString()))
-        }
+        } ?: watchHistory.firstOrNull { sameNumberedEpisode(it, animeId, episodeKey, episodeNumber) }
+
+    // An entry from another device (기기 동기화) may know the episode by another key than this app's episode id: the same
+    // work and number, neither key naming a lettered episode (4a), is the same episode.
+    private fun sameNumberedEpisode(it: WatchProgress, animeId: String, episodeKey: String, episodeNumber: Int): Boolean {
+        if (it.animeId != animeId || it.episodeNumber != episodeNumber) return false
+        val plain = { key: String -> DeviceSyncMapping.displayOf(key).let { d -> d == null || d.all { c -> c.isDigit() } } }
+        return plain(it.episodeKey) && plain(episodeKey)
+    }
 
     fun getProgress(animeId: String, episodeNumber: Int): WatchProgress? =
         watchHistory.firstOrNull { it.animeId == animeId && it.episodeNumber == episodeNumber && it.episodeKey == episodeNumber.toString() }

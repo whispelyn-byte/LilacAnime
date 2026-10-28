@@ -107,14 +107,14 @@ object DeviceSyncMapping {
         val episode = data.optJSONObject("episode")
         val given = data.optString("androidEpisodeKey").ifBlank { episode?.optString("key").orEmpty() }
         val name = episode?.optString("name").orEmpty()
-        val display = (if (given.isNotBlank()) displayOf(given) else null)
-            ?: name.takeIf { DISPLAY.matches(it) }
-            ?: episode?.optInt("number", 0)?.takeIf { it > 0 }?.toString()
-            ?: data.optInt("episodeNumber", 0).takeIf { it > 0 }?.toString()
+        val known = data.optInt("episodeNumber", 0).takeIf { it > 0 } ?: episode?.optInt("number", 0)?.takeIf { it > 0 }
+        // The key's number only where it is the episode's: a Re:Anime episode id can be a number of its own
+        // ("reanime:<slug>:<episodeId>").
+        val fromKey = (if (given.isNotBlank()) displayOf(given) else null)?.takeIf { known == null || it.takeWhile { c -> c.isDigit() }.toIntOrNull() == known }
+        val display = fromKey ?: name.takeIf { DISPLAY.matches(it) && (known == null || it.takeWhile { c -> c.isDigit() }.toIntOrNull() == known) } ?: known?.toString()
         val key = given.ifBlank { display?.let { androidEpisodeKey(animeId, it, episode?.optBoolean("dub") == true, episode?.optString("url")) } ?: "" }
         if (key.isBlank()) return null
-        val number = data.optInt("episodeNumber", 0).takeIf { it > 0 } ?: episode?.optInt("number", 0)?.takeIf { it > 0 }
-            ?: display?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 1
+        val number = known ?: display?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 1
         return Identity(animeId, key, number, display ?: number.toString())
     }
 
@@ -203,12 +203,15 @@ object DeviceSyncMapping {
                         .put("data", outgoingHistory(known.optJSONObject(id)?.optJSONObject("data"), identity, data, works[identity.animeId], sentId)))
                 }
             }
+            val sentIds = (0 until out.length()).map { out.getJSONObject(it).optString("id") }.toSet()
             for (id in before.keys().asSequence().toList()) {
                 if (current.has(id)) continue
                 val serverId = known.optJSONObject(id)?.optString("id")?.ifBlank { null }
                 val fallback = if (collection == "library") desktopLibraryId(id) else identityOf(id)?.let { desktopHistoryId(it) } ?: id
-                out.put(JSONObject().put("collection", collection).put("id", serverId ?: fallback).put("updated", now).put("deleted", true))
                 known.remove(id)
+                // The same episode under another key here (played again under its own episode id) is sent instead.
+                if ((serverId ?: fallback) in sentIds) continue
+                out.put(JSONObject().put("collection", collection).put("id", serverId ?: fallback).put("updated", now).put("deleted", true))
             }
         }
         return out
@@ -230,7 +233,7 @@ object DeviceSyncMapping {
                 })
         } ?: JSONObject(local.toString())
         val progress = local.optDouble("progress", 0.0)
-        return base.put("progress", if (desktop) progress * 100.0 else progress).put("updated", local.optLong("updated", 0L))
+        return base.put("progress", if (desktop) Math.round(progress * 100.0).toDouble() else progress).put("updated", local.optLong("updated", 0L))
             .put("androidAnimeId", identity.animeId).put("androidEpisodeKey", identity.episodeKey).put("episodeNumber", identity.episodeNumber)
     }
 

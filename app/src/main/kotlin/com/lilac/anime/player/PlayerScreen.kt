@@ -840,6 +840,8 @@ fun PlayerScreen(
 
     fun leave() {
         saveProgressNow()
+        // The other devices get where it stopped soon after leaving (see AnimeViewModel.syncSoon).
+        vm.syncSoon(context, 2_000)
         if (!MainActivity.isInPictureInPicture) {
             runCatching { FlixCloudHlsProxy.clearSessions() }
             runCatching { engine.stop() }
