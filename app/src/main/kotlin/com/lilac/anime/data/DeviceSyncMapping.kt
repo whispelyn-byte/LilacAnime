@@ -254,7 +254,10 @@ object DeviceSyncMapping {
                 val data = item.optJSONObject("data")
                 if (item.optBoolean("deleted")) {
                     val id = byServerId[serverId] ?: if (collection == "library") libraryId(serverId, null) else serverId
-                    if (id != null) { values.remove(id); known.remove(id) }
+                    // The removal of an id the entry has since moved off (the desktop took it under its own, removing
+                    // this app's) changes nothing.
+                    val current = id?.let { known.optJSONObject(it)?.optString("id") }
+                    if (id != null && (current.isNullOrBlank() || current == serverId)) { values.remove(id); known.remove(id) }
                     continue
                 }
                 if (data == null) continue
