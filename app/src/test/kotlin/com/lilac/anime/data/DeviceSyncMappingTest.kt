@@ -156,6 +156,21 @@ class DeviceSyncMappingTest {
     }
 
     @Test
+    fun `an Animenosub episode the desktop takes under its own id stays, despite the removal of this app's id`() {
+        val androidId = "animenosub:bleach:animenosub:bleach_ep_3"
+        val remote = JSONObject()
+        // This app's own entry, back from the server.
+        val mine = DeviceSyncMapping.outgoing(local(history = listOf(Triple("animenosub:bleach", "animenosub:bleach_ep_3", 0.1))), JSONObject(), JSONObject(), emptyMap(), 1000L, hash).getJSONObject(0)
+        val first = DeviceSyncMapping.merge(local(), listOf(mine), remote)
+        // The desktop played it from its list: its entry, then the removal of this app's.
+        val (desktopId, desktopData) = desktopEpisode("animenosub", "bleach", 3, 40.0, 2000L, "https://animenosub.to/bleach-episode-3/")
+        val second = DeviceSyncMapping.merge(first.values, listOf(item("history", desktopId, desktopData, 2000L), item("history", androidId, null, 3000L, deleted = true)), remote)
+        val entry = second.values.getJSONObject("history").getJSONObject(androidId)
+        assertEquals(0.4f, DeviceSyncMapping.progressFraction(entry), 0.0001f)
+        assertEquals(desktopId, remote.getJSONObject("history").getJSONObject(androidId).getString("id"))
+    }
+
+    @Test
     fun `a desktop work this app has no source for is left out`() {
         val mal = JSONObject().put("mal_id", 52991).put("title", "Frieren").put("savedAt", 1L)
         val merged = DeviceSyncMapping.merge(local(), listOf(item("library", "52991", mal, 1L)), JSONObject())
