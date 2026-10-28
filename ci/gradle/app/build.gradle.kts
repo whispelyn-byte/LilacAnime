@@ -32,6 +32,9 @@ android {
     }
 
     lint { abortOnError = false; checkReleaseBuilds = false }
+
+    // libmpv and the ASS renderer both bring the C++ runtime.
+    packaging { jniLibs { pickFirsts += listOf("**/libc++_shared.so") } }
 }
 
 kotlin { jvmToolchain(17) }
