@@ -98,12 +98,12 @@ class DeviceSyncMappingTest {
         assertEquals("reanime:https://reanime.to/watch/kaguya?ep=2", data.getString("key"))
         assertEquals("https://reanime.to/watch/kaguya?ep=2", data.getJSONObject("episode").getString("url"))
         assertEquals("2", data.getJSONObject("episode").getString("name"))
-        assertEquals(10.64, data.getDouble("progress"), 0.001)
+        assertEquals(11.0, data.getDouble("progress"), 0.0)
         assertEquals("카구야 님은 고백받고 싶어 · 2화", data.getString("name"))
         // And back here it is the same episode, at the same place.
         val identity = DeviceSyncMapping.historyIdentity(sent.getString("id"), data)!!
         assertEquals("reanime:kaguya:ep-2", identity.episodeKey)
-        assertEquals(0.1064f, DeviceSyncMapping.progressFraction(data), 0.0001f)
+        assertEquals(0.11f, DeviceSyncMapping.progressFraction(data), 0.0001f)
     }
 
     @Test
