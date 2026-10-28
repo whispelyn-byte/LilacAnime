@@ -1245,7 +1245,6 @@ fun PlayerScreen(
             }
             vm.awaitSyncForPlayback()
             val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
-            resumeDiagnostic(context, vm, anime.id, currentEpisode.id, currentEpisode.number, saved)
             launch { resumePlayback(engine, saved?.progress) { isActive } }
             if (!subtitleSelectionOpen) {
                 engine.play()
@@ -1402,7 +1401,6 @@ fun PlayerScreen(
         }
         vm.awaitSyncForPlayback()
         val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
-        resumeDiagnostic(context, vm, anime.id, currentEpisode.id, currentEpisode.number, saved)
         launch { resumePlayback(engine, saved?.progress) { isActive } }
         if (!subtitleSelectionOpen) {
             engine.play()
@@ -1601,7 +1599,6 @@ fun PlayerScreen(
 
         vm.awaitSyncForPlayback()
         val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
-        resumeDiagnostic(context, vm, anime.id, currentEpisode.id, currentEpisode.number, saved)
         val cachedSubtitleSource = if (activeSource == "reanime") {
             localSubtitle?.takeIf { File(it).isFile } ?: resolveCachedSubtitle(currentEpisode, "reanime")
         } else {
@@ -3667,22 +3664,6 @@ private fun formatTime(ms: Long): String {
     } else {
         String.format(Locale.US, "%02d:%02d", m, s)
     }
-}
-
-// The CI test build only (com.lilac.anime.citest): what the player found to resume from, to find why a position synced
-// from the desktop is not used. Not in the real app.
-private fun resumeDiagnostic(context: android.content.Context, vm: AnimeViewModel, animeId: String, episodeKey: String, number: Int, saved: com.lilac.anime.WatchProgress?) {
-    if (!context.packageName.endsWith(".citest")) return
-    val mine = vm.watchHistory.filter { it.animeId == animeId }
-    val text = buildString {
-        append("이어보기: ").append(saved?.let { "${Math.round(it.progress * 100)}% (${it.episodeKey.substringAfterLast(':')})" } ?: "없음")
-        append("\n열린 회차: ").append(episodeKey).append(" / ").append(number).append("화")
-        append("\n작품 id: ").append(animeId)
-        append("\n이 작품 기록 ").append(mine.size).append("개")
-        mine.take(3).forEach { append("\n · ").append(it.episodeKey).append(" / ").append(it.episodeNumber).append("화 ").append(Math.round(it.progress * 100)).append('%') }
-        if (mine.isEmpty()) vm.watchHistory.take(3).forEach { append("\n (다른) ").append(it.animeId).append(' ').append(it.episodeKey.substringAfterLast(':')).append(' ').append(Math.round(it.progress * 100)).append('%') }
-    }
-    android.os.Handler(android.os.Looper.getMainLooper()).post { Toast.makeText(context, text, Toast.LENGTH_LONG).show() }
 }
 
 // Goes to where the episode was left (progress 0–1; from the end on, 95 %, it starts over): once the stream knows its
