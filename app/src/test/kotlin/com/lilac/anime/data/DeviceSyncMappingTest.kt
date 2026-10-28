@@ -10,28 +10,30 @@ import org.junit.Test
 class DeviceSyncMappingTest {
     private val hash: (JSONObject) -> String = { JSONObject(it.toString()).apply { remove("updated"); remove("savedAt") }.toString() }
 
-    // As the desktop app writes them (LilacAnime-desktop src/app.js and src/device-sync.js).
+    // As the desktop app writes them (LilacAnime-desktop src/app.js and src/device-sync.js): progress in percent.
     private fun desktopAnime(provider: String, id: String, title: String) = JSONObject()
         .put("provider", provider).put("id", id).put("mal_id", "$provider:$id").put("title", title)
         .put("images", JSONObject().put("webp", JSONObject().put("large_image_url", "https://img/$id.jpg"))).put("anilistId", 154587)
 
-    private fun desktopEpisode(slug: String, number: Int, progress: Double, updated: Long): Pair<String, JSONObject> {
-        val url = "https://reanime.to/watch/$slug?ep=$number"
-        return "reanime:$url" to JSONObject().put("key", "reanime:$url").put("src", "").put("name", "장송의 프리렌 · ${number}화")
-            .put("episode", JSONObject().put("provider", "reanime").put("number", number).put("name", "$number").put("url", url))
-            .put("anime", desktopAnime("reanime", slug, "장송의 프리렌")).put("progress", progress).put("updated", updated)
-    }
+    private fun desktopEpisode(provider: String, slug: String, number: Int, progress: Double, updated: Long, url: String, name: String = "$number"): Pair<String, JSONObject> =
+        "$provider:$url" to JSONObject().put("key", "$provider:$url").put("src", "").put("name", "작품 · ${number}화")
+            .put("episode", JSONObject().put("provider", provider).put("number", number).put("name", name).put("url", url))
+            .put("anime", desktopAnime(provider, slug, "작품")).put("progress", progress).put("updated", updated)
+
+    private fun reanimeEpisode(slug: String, number: Int, progress: Double, updated: Long) =
+        desktopEpisode("reanime", slug, number, progress, updated, "https://reanime.to/watch/$slug?ep=$number")
 
     private fun item(collection: String, id: String, data: JSONObject?, updated: Long, deleted: Boolean = false) = JSONObject()
         .put("collection", collection).put("id", id).put("updated", updated).apply { if (deleted) put("deleted", true) else put("data", data) }
 
-    // This app's own shape (DeviceSyncClient.localCollections).
+    // This app's own shape (DeviceSyncClient.localCollections): the episode key is the episode's id, progress 0–1.
     private fun local(library: Set<String> = emptySet(), history: List<Triple<String, String, Double>> = emptyList(), now: Long = 1000L) = JSONObject()
         .put("library", JSONObject().apply { library.forEach { put(it, JSONObject().put("provider", "android").put("id", it).put("mal_id", it).put("title", it).put("savedAt", now)) } })
         .put("history", JSONObject().apply {
             history.forEach { (anime, key, progress) ->
-                put("$anime:$key", JSONObject().put("key", "$anime:$key").put("androidAnimeId", anime).put("androidEpisodeKey", key).put("episodeNumber", key.toInt())
-                    .put("episode", JSONObject().put("number", key.toInt()).put("key", key)).put("anime", JSONObject().put("id", anime).put("mal_id", anime).put("title", anime))
+                val number = DeviceSyncMapping.displayOf(key)?.takeWhile { it.isDigit() }?.toInt() ?: 1
+                put("$anime:$key", JSONObject().put("key", "$anime:$key").put("androidAnimeId", anime).put("androidEpisodeKey", key).put("episodeNumber", number)
+                    .put("episode", JSONObject().put("number", number).put("key", key)).put("anime", JSONObject().put("id", anime).put("mal_id", anime).put("title", anime))
                     .put("progress", progress).put("updated", now))
             }
         })
@@ -41,58 +43,79 @@ class DeviceSyncMappingTest {
     }
 
     @Test
-    fun `an episode watched on the desktop is this app's entry for that work, with the work kept`() {
-        val (id, data) = desktopEpisode("frieren", 3, 40.0, 2000L)
+    fun `an episode watched on the desktop is this app's entry for that episode, resumable here`() {
+        val (id, data) = reanimeEpisode("kaguya", 2, 72.0, 2000L)
         val remote = JSONObject()
         val merged = DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
-        val entry = merged.values.getJSONObject("history").getJSONObject("reanime:frieren:3")
-        assertEquals(DeviceSyncMapping.Identity("reanime:frieren", "3", 3), DeviceSyncMapping.historyIdentity("reanime:frieren:3", entry))
-        assertEquals(id, remote.getJSONObject("history").getJSONObject("reanime:frieren:3").getString("id"))
-        assertEquals(listOf(DeviceSyncMapping.Work("reanime:frieren", "장송의 프리렌", "https://img/frieren.jpg", 154587, null, "")), merged.works)
+        val entry = merged.values.getJSONObject("history").getJSONObject("reanime:kaguya:reanime:kaguya:ep-2")
+        // The player looks the position up by the episode's id (ReAnimeHarParser: "reanime:<slug>:ep-<n>").
+        assertEquals(DeviceSyncMapping.Identity("reanime:kaguya", "reanime:kaguya:ep-2", 2, "2"), DeviceSyncMapping.historyIdentity("x", entry))
+        assertEquals(0.72f, DeviceSyncMapping.progressFraction(entry), 0.0001f)
+        assertEquals(id, remote.getJSONObject("history").getJSONObject("reanime:kaguya:reanime:kaguya:ep-2").getString("id"))
+        assertEquals("작품", merged.works.single().title)
     }
 
     @Test
-    fun `a change made here to the desktop's episode goes back under its id, in its shape`() {
-        val (id, data) = desktopEpisode("frieren", 3, 40.0, 2000L)
+    fun `each source's episode is keyed as its parser keys it`() {
+        fun keyOf(provider: String, slug: String, url: String, name: String = "5", dub: Boolean = false): String {
+            val (_, data) = desktopEpisode(provider, slug, 5, 10.0, 1L, url, name)
+            data.getJSONObject("episode").put("dub", dub)
+            return DeviceSyncMapping.historyIdentity("x", data)!!.episodeKey
+        }
+        assertEquals("miruro:123:5", keyOf("miruro", "123", "https://www.miruro.to/watch/123?ep=5"))
+        assertEquals("animenosub:bleach_ep_5", keyOf("animenosub", "bleach", "https://animenosub.to/bleach-episode-5/"))
+        assertEquals("animenosub:bleach_dub_ep_5", keyOf("animenosub", "bleach", "https://animenosub.to/bleach-episode-5-dub/", dub = true))
+        assertEquals("animenosub:bleach_ep_5b", keyOf("animenosub", "bleach", "https://animenosub.to/bleach-episode-5b/", name = "5b"))
+        assertEquals("ohli24:슬라임:슬라임 5화", keyOf("ohli24", "슬라임", "https://ani.ohli24.com/e/${DeviceSyncMapping.encodeComponent("슬라임 5화")}"))
+        val linkani = desktopEpisode("linkani", "12345", 3, 10.0, 1L, "https://linkani.tv/watch/12345/a1/k3/").second
+        linkani.getJSONObject("anime").put("mal_id", "linkani:12345")
+        assertEquals("12345_ep_3", DeviceSyncMapping.historyIdentity("x", linkani)!!.episodeKey)
+    }
+
+    @Test
+    fun `a change made here to the desktop's episode goes back under its id, in percent`() {
+        val (id, data) = reanimeEpisode("kaguya", 2, 72.0, 2000L)
         val remote = JSONObject()
-        val merged = DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
-        val snapshot = snapshotOf(local(history = listOf(Triple("reanime:frieren", "3", 40.0))))
-        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:frieren", "3", 90.0)), now = 5000L), snapshot, remote, emptyMap(), 5000L, hash)
+        DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
+        val snapshot = snapshotOf(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-2", 0.72))))
+        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-2", 0.9)), now = 5000L), snapshot, remote, emptyMap(), 5000L, hash)
         assertEquals(1, out.length())
         val sent = out.getJSONObject(0)
         assertEquals(id, sent.getString("id"))
         val sentData = sent.getJSONObject("data")
-        assertEquals(90.0, sentData.getDouble("progress"), 0.0)
-        assertEquals("https://reanime.to/watch/frieren?ep=3", sentData.getJSONObject("episode").getString("url"))
-        assertEquals("reanime:frieren", sentData.getString("androidAnimeId"))
-        assertEquals("장송의 프리렌", sentData.getJSONObject("anime").getString("title"))
-        assertTrue(merged.values.getJSONObject("history").has("reanime:frieren:3"))
+        assertEquals(90.0, sentData.getDouble("progress"), 0.001)
+        assertEquals("https://reanime.to/watch/kaguya?ep=2", sentData.getJSONObject("episode").getString("url"))
+        assertEquals("reanime:kaguya:ep-2", sentData.getString("androidEpisodeKey"))
     }
 
     @Test
     fun `a Re-Anime episode first watched here goes out under the desktop's id, playable there`() {
-        val work = DeviceSyncMapping.Work("reanime:frieren", "장송의 프리렌", "https://img/p.jpg", null, null, "")
-        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:frieren", "4", 10.0))), JSONObject(), JSONObject(), mapOf("reanime:frieren" to work), 1000L, hash)
+        val work = DeviceSyncMapping.Work("reanime:kaguya", "카구야 님은 고백받고 싶어", "https://img/p.jpg", null, null, "")
+        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-2", 0.1064))), JSONObject(), JSONObject(), mapOf("reanime:kaguya" to work), 1000L, hash)
         val sent = out.getJSONObject(0)
-        assertEquals("reanime:https://reanime.to/watch/frieren?ep=4", sent.getString("id"))
+        assertEquals("reanime:https://reanime.to/watch/kaguya?ep=2", sent.getString("id"))
         val data = sent.getJSONObject("data")
-        assertEquals("reanime:https://reanime.to/watch/frieren?ep=4", data.getString("key"))
-        assertEquals("https://reanime.to/watch/frieren?ep=4", data.getJSONObject("episode").getString("url"))
-        assertEquals("https://reanime.to/anime/frieren", data.getJSONObject("anime").getString("url"))
-        assertEquals("장송의 프리렌", data.getJSONObject("anime").getString("title"))
-        assertEquals("장송의 프리렌 · 4화", data.getString("name"))
+        assertEquals("reanime:https://reanime.to/watch/kaguya?ep=2", data.getString("key"))
+        assertEquals("https://reanime.to/watch/kaguya?ep=2", data.getJSONObject("episode").getString("url"))
+        assertEquals("2", data.getJSONObject("episode").getString("name"))
+        assertEquals(10.64, data.getDouble("progress"), 0.001)
+        assertEquals("카구야 님은 고백받고 싶어 · 2화", data.getString("name"))
+        // And back here it is the same episode, at the same place.
+        val identity = DeviceSyncMapping.historyIdentity(sent.getString("id"), data)!!
+        assertEquals("reanime:kaguya:ep-2", identity.episodeKey)
+        assertEquals(0.1064f, DeviceSyncMapping.progressFraction(data), 0.0001f)
     }
 
     @Test
     fun `an Animenosub episode keeps this app's id but goes out with its work`() {
-        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("animenosub:bleach", "5", 10.0))), JSONObject(), JSONObject(), emptyMap(), 1000L, hash)
+        val out = DeviceSyncMapping.outgoing(local(history = listOf(Triple("animenosub:bleach", "animenosub:bleach_ep_5", 0.1))), JSONObject(), JSONObject(), emptyMap(), 1000L, hash)
         val sent = out.getJSONObject(0)
-        assertEquals("animenosub:bleach:5", sent.getString("id"))
-        val anime = sent.getJSONObject("data").getJSONObject("anime")
-        assertEquals("animenosub", anime.getString("provider"))
-        assertEquals("bleach", anime.getString("id"))
-        assertEquals("https://animenosub.to/anime/bleach/", anime.getString("url"))
-        assertFalse(sent.getJSONObject("data").getJSONObject("episode").has("url"))
+        assertEquals("animenosub:bleach:animenosub:bleach_ep_5", sent.getString("id"))
+        val data = sent.getJSONObject("data")
+        assertEquals("animenosub", data.getJSONObject("anime").getString("provider"))
+        assertEquals("https://animenosub.to/anime/bleach/", data.getJSONObject("anime").getString("url"))
+        assertEquals("5", data.getJSONObject("episode").getString("name"))
+        assertFalse(data.getJSONObject("episode").has("url"))
     }
 
     @Test
@@ -106,28 +129,30 @@ class DeviceSyncMappingTest {
         val sent = out.getJSONObject(0)
         assertEquals("linkani:456", sent.getString("id"))
         assertEquals("linkani", sent.getJSONObject("data").getString("provider"))
-        assertEquals("linkani:456", sent.getJSONObject("data").getString("mal_id"))
         assertEquals("https://linkani.tv/ani/456/", sent.getJSONObject("data").getString("url"))
     }
 
     @Test
-    fun `a removal here of the desktop's episode removes it under its id`() {
-        val (id, data) = desktopEpisode("frieren", 3, 40.0, 2000L)
+    fun `a removal here goes out under the desktop's id`() {
+        val (id, data) = reanimeEpisode("kaguya", 2, 72.0, 2000L)
         val remote = JSONObject()
         DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
-        val snapshot = snapshotOf(local(history = listOf(Triple("reanime:frieren", "3", 40.0))))
+        val snapshot = snapshotOf(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-2", 0.72))))
         val out = DeviceSyncMapping.outgoing(local(), snapshot, remote, emptyMap(), 5000L, hash)
         assertEquals(id, out.getJSONObject(0).getString("id"))
         assertTrue(out.getJSONObject(0).getBoolean("deleted"))
+        // Without a server id remembered, the id is worked out from this app's own.
+        val first = DeviceSyncMapping.outgoing(local(), snapshotOf(local(history = listOf(Triple("reanime:kaguya", "reanime:kaguya:ep-3", 0.5)))), JSONObject(), emptyMap(), 5000L, hash)
+        assertEquals("reanime:https://reanime.to/watch/kaguya?ep=3", first.getJSONObject(0).getString("id"))
     }
 
     @Test
     fun `a removal on the desktop removes this app's entry`() {
-        val (id, data) = desktopEpisode("frieren", 3, 40.0, 2000L)
+        val (id, data) = reanimeEpisode("kaguya", 2, 72.0, 2000L)
         val remote = JSONObject()
         val first = DeviceSyncMapping.merge(local(), listOf(item("history", id, data, 2000L)), remote)
         val second = DeviceSyncMapping.merge(first.values, listOf(item("history", id, null, 3000L, deleted = true)), remote)
-        assertFalse(second.values.getJSONObject("history").has("reanime:frieren:3"))
+        assertFalse(second.values.getJSONObject("history").has("reanime:kaguya:reanime:kaguya:ep-2"))
     }
 
     @Test
@@ -139,10 +164,12 @@ class DeviceSyncMappingTest {
     }
 
     @Test
-    fun `an entry from an older version of this app is still read`() {
-        val legacy = local(history = listOf(Triple("ohli24:slime", "2", 30.0))).getJSONObject("history").getJSONObject("ohli24:slime:2")
-        val merged = DeviceSyncMapping.merge(local(), listOf(item("history", "ohli24:slime:2", legacy, 1000L)), JSONObject())
-        assertTrue(merged.values.getJSONObject("history").has("ohli24:slime:2"))
+    fun `an entry from an older version of this app is still read, its progress a fraction`() {
+        val legacy = local(history = listOf(Triple("ohli24:slime", "ohli24:slime:2화", 0.3))).getJSONObject("history").getJSONObject("ohli24:slime:ohli24:slime:2화")
+        legacy.getJSONObject("anime").remove("provider")
+        val merged = DeviceSyncMapping.merge(local(), listOf(item("history", "ohli24:slime:ohli24:slime:2화", legacy, 1000L)), JSONObject())
+        val entry = merged.values.getJSONObject("history").getJSONObject("ohli24:slime:ohli24:slime:2화")
+        assertEquals(0.3f, DeviceSyncMapping.progressFraction(entry), 0.0001f)
         assertEquals(0, merged.works.size)
     }
 }

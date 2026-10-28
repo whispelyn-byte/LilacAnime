@@ -102,7 +102,7 @@ object DeviceSyncClient {
             obj.keys().asSequence().mapNotNull { id ->
                 val d = obj.optJSONObject(id) ?: return@mapNotNull null
                 val identity = DeviceSyncMapping.historyIdentity(id, d) ?: return@mapNotNull null
-                WatchProgress(identity.animeId, identity.episodeNumber.coerceAtLeast(1), d.optDouble("progress", 0.0).toFloat().coerceIn(0f, 100f), identity.episodeKey)
+                WatchProgress(identity.animeId, identity.episodeNumber.coerceAtLeast(1), DeviceSyncMapping.progressFraction(d), identity.episodeKey)
             }.distinctBy { "${it.animeId}|${it.episodeKey}" }.sortedByDescending { merged.updated[historyId(it)] ?: 0L }.take(300).toList()
         } ?: history
         OfflineStore.saveLibrary(context, newLibrary)

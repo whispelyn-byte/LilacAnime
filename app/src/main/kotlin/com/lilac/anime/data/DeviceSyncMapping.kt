@@ -11,7 +11,9 @@ import java.net.URLEncoder
  * The desktop keeps each item as a whole object: 내 목록 as the anime ({provider, id, mal_id, title, images, url}) under
  * its mal_id ("reanime:<slug>", "linkani:<id>"), 시청 기록 as {key, name, episode {provider, number, name, url},
  * anime {…}, progress, updated} under the episode's address ("reanime:https://reanime.to/watch/<slug>?ep=3").
- * This app keeps ids: an anime id ("reanime:<slug>", Linkkf's — linkani.tv's — bare number) and "<anime id>:<episode key>".
+ * This app keeps ids: an anime id ("reanime:<slug>", Linkkf's — linkani.tv's — bare number) and "<anime id>:<episode key>",
+ * the episode key being the episode's own id ("reanime:<slug>:ep-3", "animenosub:<slug>_ep_3", "<id>_ep_3"), which the
+ * player looks the saved position up by. Progress is a fraction here (0–1) and a percentage there (0–100).
  *
  * So that both see one entry per work and per episode, with a title:
  * - an item is taken in under this app's id, and the server's id for it is remembered ([remote]), so a later change or
@@ -25,7 +27,8 @@ import java.net.URLEncoder
 object DeviceSyncMapping {
     val COLLECTIONS = listOf("library", "history")
 
-    data class Identity(val animeId: String, val episodeKey: String, val episodeNumber: Int) {
+    /** display: the episode's number as shown ("3", "3a"). */
+    data class Identity(val animeId: String, val episodeKey: String, val episodeNumber: Int, val display: String = episodeNumber.toString()) {
         val historyId get() = "$animeId:$episodeKey"
     }
 
@@ -75,14 +78,26 @@ object DeviceSyncMapping {
         return androidAnimeId(data)
     }
 
-    private fun episodeKey(episode: JSONObject?): String? {
-        if (episode == null) return null
-        val key = episode.optString("key")
-        if (key.isNotBlank()) return key
-        val name = episode.optString("name")
-        if (Regex("^\\d+[a-zA-Z]?$").matches(name)) return name
-        val number = episode.optInt("number", 0)
-        return if (number > 0) number.toString() else null
+    private val DISPLAY = Regex("^\\d+[a-zA-Z]?$")
+
+    // The number shown for an episode from this app's episode id (Re:Anime "…:ep-3", Animenosub / Linkkf "…_ep_3",
+    // Miruro "…:3"; a bare number from older versions).
+    fun displayOf(key: String): String? =
+        Regex("(?:_ep_|:ep-)(\\d+[a-zA-Z]?)$").find(key)?.groupValues?.get(1)
+            ?: Regex("(?:^|:)(\\d+)$").find(key)?.groupValues?.get(1)
+
+    /** This app's episode id for an episode of the desktop's, as its sources' parsers make it. */
+    fun androidEpisodeKey(animeId: String, display: String, dub: Boolean, url: String?): String? {
+        val (provider, id) = split(animeId) ?: return null
+        return when (provider) {
+            "reanime" -> "reanime:$id:ep-$display"
+            "miruro" -> "$animeId:$display"
+            "animenosub" -> "${animeId}_${if (dub) "dub_" else ""}ep_$display"
+            "linkani" -> "${id}_ep_${display.lowercase()}"
+            // 애니24's episode id carries the episode's own slug, the last part of its address on the desktop.
+            "ohli24" -> url?.substringAfterLast('/')?.ifBlank { null }?.let { "ohli24:$id:${java.net.URLDecoder.decode(it.replace("+", "%2B"), "UTF-8")}" }
+            else -> null
+        }
     }
 
     /** Which work and episode a history item is, whoever wrote it. */
@@ -90,26 +105,45 @@ object DeviceSyncMapping {
         val animeId = data.optString("androidAnimeId").ifBlank { androidAnimeId(data.optJSONObject("anime")) ?: "" }
         if (animeId.isBlank()) return null
         val episode = data.optJSONObject("episode")
-        val key = data.optString("androidEpisodeKey").ifBlank { episodeKey(episode) ?: "" }
+        val given = data.optString("androidEpisodeKey").ifBlank { episode?.optString("key").orEmpty() }
+        val name = episode?.optString("name").orEmpty()
+        val display = (if (given.isNotBlank()) displayOf(given) else null)
+            ?: name.takeIf { DISPLAY.matches(it) }
+            ?: episode?.optInt("number", 0)?.takeIf { it > 0 }?.toString()
+            ?: data.optInt("episodeNumber", 0).takeIf { it > 0 }?.toString()
+        val key = given.ifBlank { display?.let { androidEpisodeKey(animeId, it, episode?.optBoolean("dub") == true, episode?.optString("url")) } ?: "" }
         if (key.isBlank()) return null
         val number = data.optInt("episodeNumber", 0).takeIf { it > 0 } ?: episode?.optInt("number", 0)?.takeIf { it > 0 }
-            ?: key.takeWhile { it.isDigit() }.toIntOrNull() ?: 1
-        return Identity(animeId, key, number)
+            ?: display?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 1
+        return Identity(animeId, key, number, display ?: number.toString())
+    }
+
+    /** The work and episode of this app's history id ("<anime id>:<episode id>"). */
+    fun identityOf(historyId: String): Identity? {
+        val match = Regex("^((?:reanime|miruro|ohli24|animenosub):[^:]+|\\d+):(.+)$").find(historyId) ?: return null
+        return historyIdentity(historyId, JSONObject().put("androidAnimeId", match.groupValues[1]).put("androidEpisodeKey", match.groupValues[2]))
+    }
+
+    /** How far an item was watched, as this app keeps it (0–1): the desktop's shape has a percentage. */
+    fun progressFraction(data: JSONObject): Float {
+        val value = data.optDouble("progress", 0.0)
+        val desktop = data.optJSONObject("anime")?.has("provider") == true
+        return (if (desktop) value / 100.0 else value).toFloat().coerceIn(0f, 1f)
     }
 
     /** The desktop's address for an episode, when it follows from the ids (Re:Anime, Miruro; numbered episodes). */
-    fun desktopEpisodeUrl(animeId: String, key: String): String? {
+    fun desktopEpisodeUrl(animeId: String, display: String): String? {
         val (provider, id) = split(animeId) ?: return null
-        if (key.isEmpty() || !key.all { it.isDigit() }) return null
+        if (display.isEmpty() || !display.all { it.isDigit() }) return null
         return when (provider) {
-            "reanime" -> "https://reanime.to/watch/${encodeComponent(id)}?ep=$key"
-            "miruro" -> "https://www.miruro.to/watch/$id?ep=$key"
+            "reanime" -> "https://reanime.to/watch/${encodeComponent(id)}?ep=$display"
+            "miruro" -> "https://www.miruro.to/watch/$id?ep=$display"
             else -> null
         }
     }
 
-    fun desktopHistoryId(animeId: String, key: String): String? =
-        desktopEpisodeUrl(animeId, key)?.let { "${split(animeId)!!.first}:$it" }
+    fun desktopHistoryId(identity: Identity): String? =
+        desktopEpisodeUrl(identity.animeId, identity.display)?.let { "${split(identity.animeId)!!.first}:$it" }
 
     /** A desktop anime object for this app's anime id, with what is known of the work. */
     fun desktopAnime(animeId: String, work: Work?): JSONObject? {
@@ -164,14 +198,15 @@ object DeviceSyncMapping {
                 } else {
                     val identity = historyIdentity(id, data) ?: continue
                     val updated = data.optLong("updated", now).coerceAtLeast(1L)
-                    out.put(JSONObject().put("collection", collection).put("id", serverId ?: desktopHistoryId(identity.animeId, identity.episodeKey) ?: id).put("updated", updated)
-                        .put("data", outgoingHistory(known.optJSONObject(id)?.optJSONObject("data"), identity, data, works[identity.animeId], serverId ?: desktopHistoryId(identity.animeId, identity.episodeKey) ?: id)))
+                    val sentId = serverId ?: desktopHistoryId(identity) ?: id
+                    out.put(JSONObject().put("collection", collection).put("id", sentId).put("updated", updated)
+                        .put("data", outgoingHistory(known.optJSONObject(id)?.optJSONObject("data"), identity, data, works[identity.animeId], sentId)))
                 }
             }
             for (id in before.keys().asSequence().toList()) {
                 if (current.has(id)) continue
                 val serverId = known.optJSONObject(id)?.optString("id")?.ifBlank { null }
-                val fallback = if (collection == "library") desktopLibraryId(id) else id.substringBeforeLast(':').let { anime -> desktopHistoryId(anime, id.substringAfterLast(':')) } ?: id
+                val fallback = if (collection == "library") desktopLibraryId(id) else identityOf(id)?.let { desktopHistoryId(it) } ?: id
                 out.put(JSONObject().put("collection", collection).put("id", serverId ?: fallback).put("updated", now).put("deleted", true))
                 known.remove(id)
             }
@@ -182,17 +217,20 @@ object DeviceSyncMapping {
     /** A history entry as it goes out: the desktop's shape (the server's copy when there is one) with this app's fields. */
     fun outgoingHistory(server: JSONObject?, identity: Identity, local: JSONObject, work: Work?, key: String): JSONObject {
         val title = work?.title?.takeIf { it.isNotBlank() }
+        var desktop = server != null
         val base = server?.let { JSONObject(it.toString()) } ?: desktopAnime(identity.animeId, work)?.let { anime ->
-            val url = desktopEpisodeUrl(identity.animeId, identity.episodeKey)
-            val label = if (identity.episodeKey.all { it.isDigit() }) "${identity.episodeKey}화" else identity.episodeKey
+            desktop = true
+            val url = desktopEpisodeUrl(identity.animeId, identity.display)
+            val label = "${identity.display}화"
             JSONObject().put("key", key).put("src", "").put("name", "${title ?: identity.animeId} · $label").put("subtitleTitle", title ?: "")
                 .put("image", work?.poster ?: "").put("anime", anime)
-                .put("episode", JSONObject().put("provider", anime.optString("provider")).put("number", identity.episodeNumber).put("name", identity.episodeKey).put("key", identity.episodeKey).apply {
+                .put("episode", JSONObject().put("provider", anime.optString("provider")).put("number", identity.episodeNumber).put("name", identity.display).put("key", identity.episodeKey).apply {
                     if (url != null) put("url", url)
                     if (anime.optString("provider") == "miruro") put("animeId", anime.optString("id"))
                 })
         } ?: JSONObject(local.toString())
-        return base.put("progress", local.optDouble("progress", 0.0)).put("updated", local.optLong("updated", 0L))
+        val progress = local.optDouble("progress", 0.0)
+        return base.put("progress", if (desktop) progress * 100.0 else progress).put("updated", local.optLong("updated", 0L))
             .put("androidAnimeId", identity.animeId).put("androidEpisodeKey", identity.episodeKey).put("episodeNumber", identity.episodeNumber)
     }
 
