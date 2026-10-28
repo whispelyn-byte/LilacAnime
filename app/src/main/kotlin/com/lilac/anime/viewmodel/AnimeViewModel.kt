@@ -1128,6 +1128,21 @@ class AnimeViewModel : ViewModel() {
 
     fun onAppBackground() { periodicSync?.cancel(); periodicSync = null }
 
+    // The player syncs as it opens and waits for it (at most 4 s) before it reads where to resume, so a position
+    // saved on another device a moment ago is the one it starts from.
+    private var playbackSync: Job? = null
+    fun prepareSyncForPlayback(context: Context) {
+        val app = context.applicationContext
+        if (!DeviceSyncClient.isConnected(app) || syncing || System.currentTimeMillis() - lastSync < 20_000) return
+        playbackSync = viewModelScope.launch { try { runDeviceSync(app) } catch (e: Exception) { syncStatus = e.message ?: "동기화에 실패했습니다." } }
+    }
+    suspend fun awaitSyncForPlayback() {
+        kotlinx.coroutines.withTimeoutOrNull(4_000) {
+            playbackSync?.join()
+            while (syncing) delay(100)
+        }
+    }
+
     /** One sync now (the settings' 지금 동기화 too); null when one is already running (another follows it). */
     suspend fun runDeviceSync(context: Context): DeviceSyncClient.SyncResult? {
         if (!watchHistoryLoaded) { syncSoon(context, 3_000); return null }
@@ -1193,7 +1208,7 @@ class AnimeViewModel : ViewModel() {
         rememberAnimeSnapshot(context, animeId)
         // The episode's entry from another device under another key goes too: this one takes its place.
         val filtered = watchHistory.filterNot { (it.animeId == animeId && it.episodeKey.equals(episodeKey, ignoreCase = true)) || sameNumberedEpisode(it, animeId, episodeKey, episodeNumber) }
-        val updatedItem = WatchProgress(animeId = animeId, episodeNumber = episodeNumber, progress = progress, episodeKey = episodeKey)
+        val updatedItem = WatchProgress(animeId = animeId, episodeNumber = episodeNumber, progress = progress, episodeKey = episodeKey, updatedAt = System.currentTimeMillis())
         val newList = listOf(updatedItem) + filtered
         watchHistory = newList
         viewModelScope.launch(Dispatchers.IO) { OfflineStore.saveWatchHistory(context, newList) }

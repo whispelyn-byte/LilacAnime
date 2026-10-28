@@ -102,7 +102,7 @@ object DeviceSyncClient {
             obj.keys().asSequence().mapNotNull { id ->
                 val d = obj.optJSONObject(id) ?: return@mapNotNull null
                 val identity = DeviceSyncMapping.historyIdentity(id, d) ?: return@mapNotNull null
-                WatchProgress(identity.animeId, identity.episodeNumber.coerceAtLeast(1), DeviceSyncMapping.progressFraction(d), identity.episodeKey)
+                WatchProgress(identity.animeId, identity.episodeNumber.coerceAtLeast(1), DeviceSyncMapping.progressFraction(d), identity.episodeKey, merged.updated[id] ?: 0L)
             }.distinctBy { "${it.animeId}|${it.episodeKey}" }.sortedByDescending { merged.updated[historyId(it)] ?: 0L }.take(300).toList()
         } ?: history
         OfflineStore.saveLibrary(context, newLibrary)
@@ -115,7 +115,7 @@ object DeviceSyncClient {
         val lib = JSONObject(); library.forEach { id -> lib.put(id, JSONObject().put("provider", "android").put("id", id).put("mal_id", id).put("title", id).put("savedAt", now)) }
         val hist = JSONObject(); history.forEach { w ->
             val key = historyId(w)
-            hist.put(key, JSONObject().put("key", key).put("androidAnimeId", w.animeId).put("androidEpisodeKey", w.episodeKey).put("name", "${w.animeId} · ${w.episodeKey}화").put("episodeNumber", w.episodeNumber).put("episode", JSONObject().put("number", w.episodeNumber).put("key", w.episodeKey)).put("anime", JSONObject().put("id", w.animeId).put("mal_id", w.animeId).put("title", w.animeId)).put("progress", w.progress.toDouble()).put("updated", now))
+            hist.put(key, JSONObject().put("key", key).put("androidAnimeId", w.animeId).put("androidEpisodeKey", w.episodeKey).put("name", "${w.animeId} · ${w.episodeKey}화").put("episodeNumber", w.episodeNumber).put("episode", JSONObject().put("number", w.episodeNumber).put("key", w.episodeKey)).put("anime", JSONObject().put("id", w.animeId).put("mal_id", w.animeId).put("title", w.animeId)).put("progress", w.progress.toDouble()).put("updated", w.updatedAt.takeIf { it > 0L } ?: now))
         }
         return JSONObject().put("library", lib).put("history", hist)
     }

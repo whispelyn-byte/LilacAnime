@@ -207,6 +207,8 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
+    // 기기 동기화 first, for a position saved on another device (see AnimeViewModel.awaitSyncForPlayback).
+    LaunchedEffect(Unit) { vm.prepareSyncForPlayback(context) }
     // Foreground playback gets a fresh libmpv session on every PlayerScreen
     // entry.  The only time the process-wide instance is intentionally reused is
     // background-audio/PiP continuation.
@@ -1241,6 +1243,7 @@ fun PlayerScreen(
                 if (engine.duration > 0L) return@repeat
                 delay(100)
             }
+            vm.awaitSyncForPlayback()
             val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
             val resume = saved?.progress
                 ?.takeUnless { it >= 0.95f }
@@ -1401,6 +1404,7 @@ fun PlayerScreen(
             if (engine.duration > 0L) return@repeat
             delay(100)
         }
+        vm.awaitSyncForPlayback()
         val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
         val resume = saved?.progress
             ?.takeUnless { it >= 0.95f }
@@ -1603,6 +1607,7 @@ fun PlayerScreen(
             streamReferer
         )
 
+        vm.awaitSyncForPlayback()
         val saved = vm.getProgress(anime.id, currentEpisode.id, currentEpisode.number)
         val cachedSubtitleSource = if (activeSource == "reanime") {
             localSubtitle?.takeIf { File(it).isFile } ?: resolveCachedSubtitle(currentEpisode, "reanime")
