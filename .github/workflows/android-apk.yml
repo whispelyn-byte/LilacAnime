@@ -1,0 +1,72 @@
+name: Android APK (personal build, no release)
+on:
+  push:
+    branches: [apk-build]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag or commit of the app source to build
+        default: main
+      source_repo:
+        description: Repository holding the app source
+        default: dream150/LilacAnime
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Build files (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: ci
+      - name: App source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo || 'dream150/LilacAnime' }}
+          ref: ${{ inputs.source_ref || 'main' }}
+          path: src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Lay the Gradle files over the source
+        run: |
+          cp -r ci/ci/android/. src/
+          echo "LILAC_SOURCE_SHA=$(git -C src rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          name=$(grep -E '^versionName' src/app/module.toml | sed -E 's/.*"(.*)"/\1/')
+          code=$(grep -E '^versionCode' src/app/module.toml | sed -E 's/[^0-9]//g')
+          echo "LILAC_VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "LILAC_VERSION_CODE=$code" >> "$GITHUB_ENV"
+      - name: Signing key (a fixed one when the secret is set, else the runner's debug key)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/personal.p12"
+            echo "LILAC_KEYSTORE=$RUNNER_TEMP/personal.p12" >> "$GITHUB_ENV"
+            echo "LILAC_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "Signing with the personal key."
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 is not set: signed with this runner's debug key, so the next build will not install over this one."
+          fi
+      - name: Build
+        working-directory: src
+        run: gradle :app:assembleRelease --stacktrace
+      - name: Name the APK
+        run: |
+          mkdir -p out
+          cp src/app/build/outputs/apk/release/*.apk "out/LilacAnime-${LILAC_VERSION_NAME}-${LILAC_SOURCE_SHA}.apk"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LilacAnime-apk-${{ env.LILAC_SOURCE_SHA }}
+          path: out/*.apk
+          retention-days: 14
+          if-no-files-found: error
