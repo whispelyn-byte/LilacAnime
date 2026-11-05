@@ -18,7 +18,8 @@ android {
         versionCode = (System.getenv("LILAC_VERSION_CODE") ?: "30").toInt()
         versionName = System.getenv("LILAC_VERSION_NAME") ?: "0.4.1-alpha-5"
         ndk { abiFilters += listOf("arm64-v8a") }
-        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_static"); cFlags += listOf("-O2", "-pthread"); cppFlags += listOf("-O2", "-pthread") } }
+        // The flags of module.toml [ndk]: ggml-cpu takes its portable kernels (GGML_CPU_GENERIC).
+        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_static"); cFlags += listOf("-O2", "-pthread", "-D_GNU_SOURCE", "-DGGML_USE_CPU", "-DGGML_CPU_GENERIC"); cppFlags += listOf("-O2", "-pthread", "-D_GNU_SOURCE", "-DGGML_USE_CPU", "-DGGML_CPU_GENERIC") } }
     }
 
     signingConfigs {
